@@ -1,0 +1,23 @@
+.{
+    .name = .zig,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "root.zig",
+        "zig.zig",
+        "ICON.png",
+        "src",
+        "assets",
+        "queries",
+    },
+    .fingerprint = 0xc1ce1081b7e074e3,
+    .dependencies = .{
+        .fizzy = .{
+            .url = "https://github.com/fizzyedit/fizzy/archive/b5cfae1bd59be4e6f34780173127faf0ee4dbb29.tar.gz",
+            .hash = "fizzy-0.0.20-c46aVn7UMwBGEVO6-XevM4CP5pPNpZWp8Bi1_pE3NJHW",
+            //.path = "../../fizzy",
+        },
+    },
+}
