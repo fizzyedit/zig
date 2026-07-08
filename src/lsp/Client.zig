@@ -358,7 +358,7 @@ fn spawnAndHandshake(self: *Client, io: std.Io) !void {
     }
     dvui.log.warn("zig: negotiated position encoding: {s}", .{@tagName(self.encoding)});
 
-    try self.sendNotification(io, "initialized", .{});
+    try self.sendNotification(io, "initialized", Protocol.EmptyObject{});
 
     self.dispatch_thread = try std.Thread.spawn(.{}, dispatchThreadMain, .{ self, io });
     dvui.log.warn("zig: zls ready", .{});

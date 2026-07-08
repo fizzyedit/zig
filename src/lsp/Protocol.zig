@@ -7,6 +7,14 @@ const std = @import("std");
 const zig_mod = @import("../../zig.zig");
 const dvui = zig_mod.dvui;
 
+/// An empty JSON object (`{}`), e.g. for `InitializedParams`. Deliberately a named struct
+/// type, not `.{}` — Zig infers the anonymous empty-struct literal `.{}` as a distinct
+/// "tuple" type (all-positional-fields is vacuously true with zero fields), and
+/// `std.json.Stringify` follows that to serialize it as `[]` instead of `{}`. LSP servers
+/// (zls included) reject a JSON array where an object is required for `params`, so this
+/// silent mis-serialization previously crashed zls right after `initialize`.
+pub const EmptyObject = struct {};
+
 /// Whether LSP `Position.character` is a UTF-8 byte offset within the line (if the server
 /// honored our `general.positionEncodings: ["utf-8"]` capability) or the LSP-default UTF-16
 /// code-unit offset. Negotiated once during `initialize`; see `Client.zig`.
