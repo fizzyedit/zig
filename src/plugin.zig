@@ -10,7 +10,6 @@ pub const manifest = sdk.PluginManifest{
     .id = "zig",
     .name = "Zig",
     .version = plugin_options.version,
-    .min_sdk_version = .{ .major = 0, .minor = 11, .patch = 0 },
 };
 
 var plugin: sdk.Plugin = .{

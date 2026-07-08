@@ -9,7 +9,6 @@
         "zig.zig",
         "ICON.png",
         "src",
-        "assets",
         "queries",
     },
     .fingerprint = 0xc1ce1081b7e074e3,
