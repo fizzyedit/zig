@@ -4,8 +4,6 @@
 //! `docs/PLUGINS.md` in the fizzy repo for why the SDK boundary keeps `bytes`/`path` as
 //! plain parameters instead of a richer document model.
 const std = @import("std");
-const zig_mod = @import("../../zig.zig");
-const dvui = zig_mod.dvui;
 
 /// An empty JSON object (`{}`), e.g. for `InitializedParams`. Deliberately a named struct
 /// type, not `.{}` — Zig infers the anonymous empty-struct literal `.{}` as a distinct
@@ -88,7 +86,6 @@ pub fn positionToByteOffset(text: []const u8, pos: Position, encoding: PositionE
 pub fn writeMessage(allocator: std.mem.Allocator, writer: *std.Io.Writer, value: anytype) !void {
     const body = try std.json.Stringify.valueAlloc(allocator, value, .{});
     defer allocator.free(body);
-    dvui.log.warn("zig: sending: {s}", .{body});
     try writer.print("Content-Length: {d}\r\n\r\n", .{body.len});
     try writer.writeAll(body);
     try writer.flush();
