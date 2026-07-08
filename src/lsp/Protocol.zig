@@ -88,7 +88,13 @@ pub fn writeMessage(allocator: std.mem.Allocator, writer: *std.Io.Writer, value:
 pub fn readMessage(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
     var content_length: ?usize = null;
     while (true) {
-        const line = try reader.takeDelimiterExclusive('\n');
+        // `takeDelimiterInclusive` (not `...Exclusive`) — the exclusive variant returns the
+        // line without the delimiter but crucially does *not* consume the delimiter from the
+        // stream either, leaving the `\n` for the next call to trip over as a phantom
+        // zero-length line. Take the line including `\n`, then strip it (and any `\r`)
+        // ourselves.
+        const raw_line = try reader.takeDelimiterInclusive('\n');
+        const line = std.mem.trimEnd(u8, raw_line, "\n");
         const trimmed = std.mem.trimEnd(u8, line, "\r");
         if (trimmed.len == 0) break; // blank line ends the header block
         if (std.ascii.startsWithIgnoreCase(trimmed, "content-length:")) {
@@ -133,4 +139,60 @@ pub fn parseResponse(parsed: std.json.Value) ParsedResponse {
     out.result = obj.get("result");
     out.err = obj.get("error");
     return out;
+}
+
+test "readMessage parses a single Content-Length-framed message" {
+    const allocator = std.testing.allocator;
+    const frame = "Content-Length: 14\r\n\r\n{\"jsonrpc\":\"\"}";
+    var reader = std.Io.Reader.fixed(frame);
+    const body = try readMessage(allocator, &reader);
+    defer allocator.free(body);
+    try std.testing.expectEqualStrings("{\"jsonrpc\":\"\"}", body);
+}
+
+test "readMessage parses back-to-back messages correctly (regression: header delimiter must be consumed)" {
+    // Regression test for a bug where `takeDelimiterExclusive` was used without also
+    // consuming the delimiter byte it leaves behind, causing every header line after the
+    // first to be misread as an empty line terminating the header block early, and the
+    // body read to start at the wrong offset. Two full messages back to back is the
+    // minimal repro: the first message's parsing must not corrupt the stream position for
+    // the second.
+    const allocator = std.testing.allocator;
+    const frame =
+        "Content-Length: 13\r\n\r\n{\"a\":\"first\"}" ++
+        "Content-Length: 14\r\n\r\n{\"a\":\"second\"}";
+    var reader = std.Io.Reader.fixed(frame);
+
+    const first = try readMessage(allocator, &reader);
+    defer allocator.free(first);
+    try std.testing.expectEqualStrings("{\"a\":\"first\"}", first);
+
+    const second = try readMessage(allocator, &reader);
+    defer allocator.free(second);
+    try std.testing.expectEqualStrings("{\"a\":\"second\"}", second);
+}
+
+test "readMessage ignores non-Content-Length headers" {
+    const allocator = std.testing.allocator;
+    const frame = "Content-Type: application/vscode-jsonrpc\r\nContent-Length: 7\r\n\r\n{\"x\":1}";
+    var reader = std.Io.Reader.fixed(frame);
+    const body = try readMessage(allocator, &reader);
+    defer allocator.free(body);
+    try std.testing.expectEqualStrings("{\"x\":1}", body);
+}
+
+test "writeMessage / readMessage roundtrip" {
+    const allocator = std.testing.allocator;
+    var buf: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try writeMessage(allocator, &writer, .{ .jsonrpc = "2.0", .id = 1, .method = "initialize" });
+
+    var reader = std.Io.Reader.fixed(writer.buffered());
+    const body = try readMessage(allocator, &reader);
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const resp = parseResponse(parsed.value);
+    try std.testing.expectEqual(@as(?i64, 1), resp.id);
 }
