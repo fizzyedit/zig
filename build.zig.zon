@@ -14,9 +14,12 @@
     .fingerprint = 0xc1ce1081b7e074e3,
     .dependencies = .{
         .fizzy = .{
-            .url = "https://github.com/fizzyedit/fizzy/archive/b5cfae1bd59be4e6f34780173127faf0ee4dbb29.tar.gz",
-            .hash = "fizzy-0.0.20-c46aVn7UMwBGEVO6-XevM4CP5pPNpZWp8Bi1_pE3NJHW",
-            //.path = "../../fizzy",
+            //.url = "https://github.com/fizzyedit/fizzy/archive/b5cfae1bd59be4e6f34780173127faf0ee4dbb29.tar.gz",
+            //.hash = "fizzy-0.0.20-c46aVn7UMwBGEVO6-XevM4CP5pPNpZWp8Bi1_pE3NJHW",
+            // Local dev: pinned fizzy commit (b5cfae1) doesn't have the hover/gotoDefinition
+            // SDK hooks yet — pointed at the sibling checkout's `lsp-hover-gotodef` branch
+            // until that lands upstream and can be re-pinned by URL+hash.
+            .path = "../../fizzy",
         },
     },
 }

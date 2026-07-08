@@ -3,6 +3,7 @@ const zig = @import("../zig.zig");
 const sdk = zig.sdk;
 const dvui = zig.dvui;
 const Highlight = @import("Highlight.zig");
+const Lsp = @import("Lsp.zig");
 
 const plugin_options = @import("fizzy_plugin_options");
 
@@ -21,6 +22,8 @@ var plugin: sdk.Plugin = .{
 
 const vtable: sdk.Plugin.VTable = .{
     .deinit = deinit,
+    .onFolderOpen = Lsp.onFolderOpen,
+    .onFolderClose = Lsp.onFolderClose,
 };
 
 var plugin_state: u8 = 0;
@@ -33,6 +36,8 @@ const language_support: sdk.LanguageSupport = .{
 
 const language_vtable: sdk.LanguageSupport.VTable = .{
     .treeSitterHighlight = Highlight.treeSitterHighlight,
+    .hover = Lsp.hover,
+    .gotoDefinition = Lsp.gotoDefinition,
 };
 
 const icon_png = @embedFile("../ICON.png");
@@ -57,7 +62,9 @@ pub fn register(host: *sdk.Host) !void {
     try host.registerLanguageSupport(language_support);
 }
 
-fn deinit(_: *anyopaque) void {}
+fn deinit(_: *anyopaque) void {
+    Lsp.deinit();
+}
 
 comptime {
     sdk.Plugin.assertUtilityVTable(vtable);
