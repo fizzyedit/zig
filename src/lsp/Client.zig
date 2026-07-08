@@ -56,7 +56,13 @@ const CacheKey = struct {
 };
 
 const CacheEntry = struct {
-    text: []u8,
+    /// null is a *negative* cache entry — "zls has no hover info at this position" — still a
+    /// cache hit. Without this, dwelling over any token with no hover (whitespace,
+    /// punctuation, an unresolvable symbol, ...) would re-send an identical request to zls
+    /// every single frame for as long as the mouse sits still, since nothing else would
+    /// ever populate the cache for that key. That's a real hard-freeze risk, not just waste:
+    /// it showed up in practice hovering into a huge stdlib file after goto-definition.
+    text: ?[]u8,
     /// Insertion sequence number (from `Client.cache_seq`), used for oldest-first eviction.
     /// A plain counter, not wall-clock time — this zig's `std.time` has no timestamp function
     /// usable off the `Io` interface, and a counter is all LRU-ish eviction needs anyway.
@@ -142,7 +148,7 @@ pub fn hover(self: *Client, path: []const u8, bytes: []const u8, byte_offset: us
     self.hover_cache_lock.lock();
     if (self.hover_cache.get(key)) |entry| {
         self.hover_cache_lock.unlock();
-        return .{ .text = entry.text };
+        return if (entry.text) |t| .{ .text = t } else null;
     }
     if (self.in_flight.contains(key)) {
         self.hover_cache_lock.unlock();
@@ -385,7 +391,9 @@ fn shutdownProcess(self: *Client) void {
 
     self.hover_cache_lock.lock();
     var hc_it = self.hover_cache.iterator();
-    while (hc_it.next()) |e| gpa.free(e.value_ptr.text);
+    while (hc_it.next()) |e| {
+        if (e.value_ptr.text) |t| gpa.free(t);
+    }
     self.hover_cache.clearAndFree(gpa);
     self.in_flight.clearAndFree(gpa);
     self.hover_cache_lock.unlock();
@@ -499,6 +507,8 @@ fn runHoverJob(self: *Client, io: std.Io, j: HoverJob) !void {
     });
     const body = self.waitForSlot(io, req.id, req.slot, hover_timeout_ms) orelse {
         dvui.log.warn("zig: hover request (id={d}) timed out", .{req.id});
+        // Deliberately not cached: no response at all is inconclusive (could be a slow
+        // first parse of a huge file), unlike the definitive "no hover here" answers below.
         return;
     };
     defer gpa.free(body);
@@ -509,24 +519,36 @@ fn runHoverJob(self: *Client, io: std.Io, j: HoverJob) !void {
     const resp = Protocol.parseResponse(parsed.value);
     const result = resp.result orelse {
         dvui.log.warn("zig: hover response had no result (error={any})", .{resp.err});
+        self.cacheHoverResult(gpa, j.key, null);
         return;
     };
-    if (result == .null) return;
+    if (result == .null) {
+        self.cacheHoverResult(gpa, j.key, null);
+        return;
+    }
     const contents = jsonGet(result, "contents") orelse {
         dvui.log.warn("zig: hover result had no 'contents' field", .{});
+        self.cacheHoverResult(gpa, j.key, null);
         return;
     };
     const text = extractContentsText(contents) orelse {
         dvui.log.warn("zig: could not extract text from hover 'contents'", .{});
+        self.cacheHoverResult(gpa, j.key, null);
         return;
     };
     const owned_text = try gpa.dupe(u8, text);
+    self.cacheHoverResult(gpa, j.key, owned_text);
+}
 
+/// Stores a hover result (or a negative `null` entry — see `CacheEntry.text`) in the cache
+/// and evicts the oldest entry if it's now over `hover_cache_limit`. `owned_text`, if
+/// non-null, must already be owned by `gpa` — this function takes ownership of it.
+fn cacheHoverResult(self: *Client, gpa: std.mem.Allocator, key: CacheKey, owned_text: ?[]u8) void {
     self.hover_cache_lock.lock();
     defer self.hover_cache_lock.unlock();
     self.cache_seq += 1;
-    self.hover_cache.put(gpa, j.key, .{ .text = owned_text, .seq = self.cache_seq }) catch {
-        gpa.free(owned_text);
+    self.hover_cache.put(gpa, key, .{ .text = owned_text, .seq = self.cache_seq }) catch {
+        if (owned_text) |t| gpa.free(t);
         return;
     };
     self.evictOldestIfNeededLocked(gpa);
@@ -544,7 +566,9 @@ fn evictOldestIfNeededLocked(self: *Client, gpa: std.mem.Allocator) void {
         }
     }
     if (oldest_key) |k| {
-        if (self.hover_cache.fetchRemove(k)) |kv| gpa.free(kv.value.text);
+        if (self.hover_cache.fetchRemove(k)) |kv| {
+            if (kv.value.text) |t| gpa.free(t);
+        }
     }
 }
 
