@@ -173,19 +173,27 @@ pub fn hover(self: *Client, path: []const u8, bytes: []const u8, byte_offset: us
         return null;
     };
     self.queue_lock.unlock();
+    dvui.log.warn("zig: hover: queued fetch for {s}@{d}", .{ path, byte_offset });
     return null;
 }
 
 /// May block up to `definition_timeout_ms`. Returns the definition location for the symbol
 /// at `byte_offset`, or null on timeout / no result / zls unavailable.
 pub fn gotoDefinition(self: *Client, path: []const u8, bytes: []const u8, byte_offset: usize) ?sdk.language.DefinitionLocation {
+    dvui.log.warn("zig: gotoDefinition: path={s} byte_offset={d}", .{ path, byte_offset });
     if (path.len == 0) return null;
-    if (!self.ensureStarted(path)) return null;
+    if (!self.ensureStarted(path)) {
+        dvui.log.warn("zig: gotoDefinition: ensureStarted returned false (state={s})", .{@tagName(self.state.load(.acquire))});
+        return null;
+    }
 
     const io = dvui.io;
     const gpa = sdk.allocator();
 
-    self.syncDocument(io, path, bytes) catch return null;
+    self.syncDocument(io, path, bytes) catch |err| {
+        dvui.log.warn("zig: gotoDefinition: syncDocument failed: {any}", .{err});
+        return null;
+    };
 
     const pos = Protocol.byteOffsetToPosition(bytes, byte_offset, self.encoding);
     const uri = UriUtil.pathToUri(gpa, path) catch return null;
@@ -194,15 +202,25 @@ pub fn gotoDefinition(self: *Client, path: []const u8, bytes: []const u8, byte_o
     const req = self.sendRequest(io, "textDocument/definition", .{
         .textDocument = .{ .uri = uri },
         .position = pos,
-    }) catch return null;
+    }) catch |err| {
+        dvui.log.warn("zig: gotoDefinition: sendRequest failed: {any}", .{err});
+        return null;
+    };
 
-    const body = self.waitForSlot(io, req.id, req.slot, definition_timeout_ms) orelse return null;
+    const body = self.waitForSlot(io, req.id, req.slot, definition_timeout_ms) orelse {
+        dvui.log.warn("zig: gotoDefinition: request (id={d}) timed out", .{req.id});
+        return null;
+    };
     defer gpa.free(body);
+    dvui.log.warn("zig: gotoDefinition response (id={d}): {s}", .{ req.id, body });
 
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, body, .{}) catch return null;
     defer parsed.deinit();
     const resp = Protocol.parseResponse(parsed.value);
-    const result = resp.result orelse return null;
+    const result = resp.result orelse {
+        dvui.log.warn("zig: gotoDefinition: no result (error={any})", .{resp.err});
+        return null;
+    };
 
     const loc_obj = firstLocationObject(result) orelse return null;
     const target_uri = jsonString(loc_obj, "uri") orelse return null;
@@ -256,12 +274,18 @@ fn deriveFallbackRoot(self: *Client, doc_path: []const u8) void {
 fn ensureStarted(self: *Client, doc_path: []const u8) bool {
     switch (self.state.load(.acquire)) {
         .ready => return true,
-        .unavailable, .starting => return false,
+        .unavailable => return false,
+        .starting => return false,
         .not_started => {
             if (self.workspace_root == null) self.deriveFallbackRoot(doc_path);
-            if (self.workspace_root == null) return false;
+            if (self.workspace_root == null) {
+                dvui.log.warn("zig: ensureStarted: no workspace root (doc_path={s}) — not spawning zls", .{doc_path});
+                return false;
+            }
+            dvui.log.warn("zig: ensureStarted: kicking off zls startup thread (root={s})", .{self.workspace_root.?});
             self.state.store(.starting, .release);
-            const t = std.Thread.spawn(.{}, startupThreadMain, .{self}) catch {
+            const t = std.Thread.spawn(.{}, startupThreadMain, .{self}) catch |err| {
+                dvui.log.warn("zig: std.Thread.spawn(startupThreadMain) failed: {any}", .{err});
                 self.state.store(.unavailable, .release);
                 return false;
             };
@@ -284,13 +308,18 @@ fn spawnAndHandshake(self: *Client, io: std.Io) !void {
     const root = self.workspace_root orelse return error.NoWorkspace;
     const gpa = sdk.allocator();
 
-    self.child = try std.process.spawn(io, .{
+    dvui.log.warn("zig: spawning zls, cwd={s}", .{root});
+    self.child = std.process.spawn(io, .{
         .argv = &.{"zls"},
         .cwd = .{ .path = root },
         .stdin = .pipe,
         .stdout = .pipe,
         .stderr = .ignore,
-    });
+    }) catch |err| {
+        dvui.log.warn("zig: std.process.spawn(\"zls\") failed: {any}", .{err});
+        return err;
+    };
+    dvui.log.warn("zig: zls process spawned", .{});
 
     self.reader_thread = try std.Thread.spawn(.{}, readerThreadMain, .{ self, io });
 
@@ -307,8 +336,13 @@ fn spawnAndHandshake(self: *Client, io: std.Io) !void {
             },
         },
     });
-    const body = self.waitForSlot(io, req.id, req.slot, initialize_timeout_ms) orelse return error.InitializeTimeout;
+    dvui.log.warn("zig: sent initialize (id={d}), waiting up to {d}ms", .{ req.id, initialize_timeout_ms });
+    const body = self.waitForSlot(io, req.id, req.slot, initialize_timeout_ms) orelse {
+        dvui.log.warn("zig: initialize timed out — zls never responded", .{});
+        return error.InitializeTimeout;
+    };
     defer gpa.free(body);
+    dvui.log.warn("zig: initialize response: {s}", .{body});
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, body, .{});
     defer parsed.deinit();
@@ -320,10 +354,12 @@ fn spawnAndHandshake(self: *Client, io: std.Io) !void {
             }
         }
     }
+    dvui.log.warn("zig: negotiated position encoding: {s}", .{@tagName(self.encoding)});
 
     try self.sendNotification(io, "initialized", .{});
 
     self.dispatch_thread = try std.Thread.spawn(.{}, dispatchThreadMain, .{ self, io });
+    dvui.log.warn("zig: zls ready", .{});
 }
 
 fn shutdownProcess(self: *Client) void {
@@ -425,7 +461,10 @@ fn dispatchThreadMain(self: *Client, io: std.Io) void {
         defer gpa.free(j.bytes);
         defer self.clearInFlight(j.key);
 
-        self.runHoverJob(io, j) catch continue;
+        self.runHoverJob(io, j) catch |err| {
+            dvui.log.warn("zig: runHoverJob failed: {any}", .{err});
+            continue;
+        };
     }
 }
 
@@ -441,16 +480,29 @@ fn runHoverJob(self: *Client, io: std.Io, j: HoverJob) !void {
         .textDocument = .{ .uri = uri },
         .position = pos,
     });
-    const body = self.waitForSlot(io, req.id, req.slot, hover_timeout_ms) orelse return;
+    const body = self.waitForSlot(io, req.id, req.slot, hover_timeout_ms) orelse {
+        dvui.log.warn("zig: hover request (id={d}) timed out", .{req.id});
+        return;
+    };
     defer gpa.free(body);
+    dvui.log.warn("zig: hover response (id={d}): {s}", .{ req.id, body });
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, body, .{});
     defer parsed.deinit();
     const resp = Protocol.parseResponse(parsed.value);
-    const result = resp.result orelse return;
+    const result = resp.result orelse {
+        dvui.log.warn("zig: hover response had no result (error={any})", .{resp.err});
+        return;
+    };
     if (result == .null) return;
-    const contents = jsonGet(result, "contents") orelse return;
-    const text = extractContentsText(contents) orelse return;
+    const contents = jsonGet(result, "contents") orelse {
+        dvui.log.warn("zig: hover result had no 'contents' field", .{});
+        return;
+    };
+    const text = extractContentsText(contents) orelse {
+        dvui.log.warn("zig: could not extract text from hover 'contents'", .{});
+        return;
+    };
     const owned_text = try gpa.dupe(u8, text);
 
     self.hover_cache_lock.lock();
