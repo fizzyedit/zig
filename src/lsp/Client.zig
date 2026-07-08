@@ -314,14 +314,16 @@ fn spawnAndHandshake(self: *Client, io: std.Io) !void {
         .cwd = .{ .path = root },
         .stdin = .pipe,
         .stdout = .pipe,
-        .stderr = .ignore,
+        .stderr = .pipe,
     }) catch |err| {
         dvui.log.warn("zig: std.process.spawn(\"zls\") failed: {any}", .{err});
         return err;
     };
-    dvui.log.warn("zig: zls process spawned", .{});
+    dvui.log.warn("zig: zls process spawned (pid={?})", .{self.child.?.id});
 
     self.reader_thread = try std.Thread.spawn(.{}, readerThreadMain, .{ self, io });
+    const stderr_thread = try std.Thread.spawn(.{}, stderrDrainThreadMain, .{ self, io });
+    stderr_thread.detach();
 
     const root_uri = try UriUtil.pathToUri(gpa, root);
     defer gpa.free(root_uri);
@@ -423,10 +425,12 @@ fn readerThreadMain(self: *Client, io: std.Io) void {
     var buf: [1 << 16]u8 = undefined;
     var rdr = self.child.?.stdout.?.reader(io, &buf);
     while (!self.shutdown.load(.acquire)) {
-        const body = Protocol.readMessage(gpa, &rdr.interface) catch {
+        const body = Protocol.readMessage(gpa, &rdr.interface) catch |err| {
+            dvui.log.warn("zig: readerThreadMain: readMessage failed: {any} — zls stdout closed/unreadable", .{err});
             self.state.store(.unavailable, .release);
             return;
         };
+        dvui.log.warn("zig: readerThreadMain: got message: {s}", .{body});
         var owned = true;
         defer if (owned) gpa.free(body);
 
@@ -443,6 +447,18 @@ fn readerThreadMain(self: *Client, io: std.Io) void {
             owned = false;
             s.ready.store(true, .release);
         }
+    }
+}
+
+/// Drains zls's stderr and logs each line — otherwise a crash, bad-arg error, or protocol
+/// complaint from zls is completely invisible (its exit/silence looks identical to a hang).
+fn stderrDrainThreadMain(self: *Client, io: std.Io) void {
+    const stderr_file = self.child.?.stderr orelse return;
+    var buf: [4096]u8 = undefined;
+    var rdr = stderr_file.reader(io, &buf);
+    while (true) {
+        const line = rdr.interface.takeDelimiterExclusive('\n') catch break;
+        dvui.log.warn("zig: zls stderr: {s}", .{line});
     }
 }
 
