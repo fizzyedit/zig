@@ -457,7 +457,8 @@ fn stderrDrainThreadMain(self: *Client, io: std.Io) void {
     var buf: [4096]u8 = undefined;
     var rdr = stderr_file.reader(io, &buf);
     while (true) {
-        const line = rdr.interface.takeDelimiterExclusive('\n') catch break;
+        const raw_line = rdr.interface.takeDelimiterInclusive('\n') catch break;
+        const line = std.mem.trimEnd(u8, raw_line, "\n\r");
         dvui.log.warn("zig: zls stderr: {s}", .{line});
     }
 }
