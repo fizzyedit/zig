@@ -23,12 +23,12 @@ pub fn deinit() void {
     client.deinit();
 }
 
-pub fn hover(_: *anyopaque, ext: []const u8, bytes: []const u8, byte_offset: usize) ?sdk.language.HoverResult {
+pub fn hover(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize) ?sdk.language.HoverResult {
     if (!isZigFile(ext)) return null;
-    return client.hover(bytes, byte_offset);
+    return client.hover(path, bytes, byte_offset);
 }
 
-pub fn gotoDefinition(_: *anyopaque, ext: []const u8, bytes: []const u8, byte_offset: usize) ?sdk.language.DefinitionLocation {
+pub fn gotoDefinition(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize) ?sdk.language.DefinitionLocation {
     if (!isZigFile(ext)) return null;
-    return client.gotoDefinition(bytes, byte_offset);
+    return client.gotoDefinition(path, bytes, byte_offset);
 }

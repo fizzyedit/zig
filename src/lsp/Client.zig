@@ -132,8 +132,7 @@ pub fn deinit(self: *Client) void {
 
 /// Non-blocking. Returns a cached hover result, or null and (on a cache miss) kicks off a
 /// background fetch for next time.
-pub fn hover(self: *Client, bytes: []const u8, byte_offset: usize) ?sdk.language.HoverResult {
-    const path = sdk.language.previewDocumentPath();
+pub fn hover(self: *Client, path: []const u8, bytes: []const u8, byte_offset: usize) ?sdk.language.HoverResult {
     if (path.len == 0) return null;
     if (!self.ensureStarted(path)) return null;
 
@@ -179,8 +178,7 @@ pub fn hover(self: *Client, bytes: []const u8, byte_offset: usize) ?sdk.language
 
 /// May block up to `definition_timeout_ms`. Returns the definition location for the symbol
 /// at `byte_offset`, or null on timeout / no result / zls unavailable.
-pub fn gotoDefinition(self: *Client, bytes: []const u8, byte_offset: usize) ?sdk.language.DefinitionLocation {
-    const path = sdk.language.previewDocumentPath();
+pub fn gotoDefinition(self: *Client, path: []const u8, bytes: []const u8, byte_offset: usize) ?sdk.language.DefinitionLocation {
     if (path.len == 0) return null;
     if (!self.ensureStarted(path)) return null;
 

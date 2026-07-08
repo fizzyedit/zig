@@ -20,7 +20,7 @@ jobs:
     with:
       id: zig
       version: ${{ needs.version.outputs.version }}
-      fizzy-sdk-version: "0.16.0"
-      abi-fingerprint: "0xf7caa87ae86926d0"
-      min-sdk-version: "0.16.0"
+      fizzy-sdk-version: "0.17.0"
+      abi-fingerprint: "0x515a1d4a9c4e4158"
+      min-sdk-version: "0.17.0"
       zig-version: "0.16.0"
