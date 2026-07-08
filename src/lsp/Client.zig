@@ -110,6 +110,10 @@ const initialize_timeout_ms: u64 = 10_000;
 // ---- SDK-facing entry points (called on the draw thread) ------------------------------
 
 pub fn onFolderOpen(self: *Client) void {
+    // A real project folder is always authoritative over a per-file fallback root (see
+    // `ensureStarted`) — restart zls against it if a process is already running (e.g. was
+    // lazily spawned against a loose file's directory before this folder was opened).
+    if (self.state.load(.acquire) != .not_started) self.shutdownProcess();
     self.workspaceRootUpdate();
 }
 
@@ -129,9 +133,9 @@ pub fn deinit(self: *Client) void {
 /// Non-blocking. Returns a cached hover result, or null and (on a cache miss) kicks off a
 /// background fetch for next time.
 pub fn hover(self: *Client, bytes: []const u8, byte_offset: usize) ?sdk.language.HoverResult {
-    if (!self.ensureStarted()) return null;
     const path = sdk.language.previewDocumentPath();
     if (path.len == 0) return null;
+    if (!self.ensureStarted(path)) return null;
 
     const gpa = sdk.allocator();
     const key: CacheKey = .{ .path_hash = std.hash.Wyhash.hash(0, path), .byte_offset = byte_offset };
@@ -176,9 +180,9 @@ pub fn hover(self: *Client, bytes: []const u8, byte_offset: usize) ?sdk.language
 /// May block up to `definition_timeout_ms`. Returns the definition location for the symbol
 /// at `byte_offset`, or null on timeout / no result / zls unavailable.
 pub fn gotoDefinition(self: *Client, bytes: []const u8, byte_offset: usize) ?sdk.language.DefinitionLocation {
-    if (!self.ensureStarted()) return null;
     const path = sdk.language.previewDocumentPath();
     if (path.len == 0) return null;
+    if (!self.ensureStarted(path)) return null;
 
     const io = dvui.io;
     const gpa = sdk.allocator();
@@ -240,13 +244,23 @@ fn workspaceRootUpdate(self: *Client) void {
     }
 }
 
+/// Falls back to `doc_path`'s containing directory as the workspace root when no project
+/// folder is open — otherwise a loose file opened without "Open Project Folder" would never
+/// get hover/goto-definition at all. A real folder open (`onFolderOpen`) always overrides
+/// this and restarts zls against the authoritative root.
+fn deriveFallbackRoot(self: *Client, doc_path: []const u8) void {
+    const dir = std.fs.path.dirname(doc_path) orelse return;
+    self.workspace_root = sdk.allocator().dupe(u8, dir) catch null;
+}
+
 /// Non-blocking: kicks off a background spawn+handshake at most once per `not_started`
 /// period. Returns whether the client is ready to accept requests right now.
-fn ensureStarted(self: *Client) bool {
+fn ensureStarted(self: *Client, doc_path: []const u8) bool {
     switch (self.state.load(.acquire)) {
         .ready => return true,
         .unavailable, .starting => return false,
         .not_started => {
+            if (self.workspace_root == null) self.deriveFallbackRoot(doc_path);
             if (self.workspace_root == null) return false;
             self.state.store(.starting, .release);
             const t = std.Thread.spawn(.{}, startupThreadMain, .{self}) catch {
