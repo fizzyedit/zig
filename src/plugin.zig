@@ -38,6 +38,11 @@ const language_vtable: sdk.LanguageSupport.VTable = .{
     .treeSitterHighlight = Highlight.treeSitterHighlight,
     .hover = Lsp.hover,
     .gotoDefinition = Lsp.gotoDefinition,
+    .completion = Lsp.completion,
+    .signatureHelp = Lsp.signatureHelp,
+    .resolveCompletionDocumentation = Lsp.resolveCompletionDocumentation,
+    .supportsFormat = Lsp.supportsFormat,
+    .format = Lsp.format,
 };
 
 const icon_png = @embedFile("../ICON.png");

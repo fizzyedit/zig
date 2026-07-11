@@ -32,3 +32,27 @@ pub fn gotoDefinition(_: *anyopaque, ext: []const u8, path: []const u8, bytes: [
     if (!isZigFile(ext)) return null;
     return client.gotoDefinition(path, bytes, byte_offset);
 }
+
+pub fn completion(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize) ?[]const sdk.language.CompletionItem {
+    if (!isZigFile(ext)) return null;
+    return client.completion(path, bytes, byte_offset);
+}
+
+pub fn signatureHelp(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize) ?sdk.language.SignatureHelpResult {
+    if (!isZigFile(ext)) return null;
+    return client.signatureHelp(path, bytes, byte_offset);
+}
+
+pub fn resolveCompletionDocumentation(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize, index: usize) ?[]const u8 {
+    if (!isZigFile(ext)) return null;
+    return client.resolveCompletionDocumentation(path, bytes, byte_offset, index);
+}
+
+pub fn supportsFormat(_: *anyopaque, ext: []const u8) bool {
+    return isZigFile(ext);
+}
+
+pub fn format(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8) ?[]const u8 {
+    if (!isZigFile(ext)) return null;
+    return client.format(path, bytes);
+}
