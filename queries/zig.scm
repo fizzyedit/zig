@@ -82,6 +82,17 @@
 (function_declaration
   name: (identifier) @function)
 
+; A bodyless, unterminated function signature — e.g. `fn foo(a: i32) i32`, exactly the shape
+; of an LSP hover header — doesn't parse as `function_declaration` at all: the grammar reads
+; it as `container_field name: (function_signature name: (identifier) ...)` instead, since a
+; top-level `fn` with no body/`;`/`pub` is ambiguous between a real declaration and a struct
+; field whose type happens to start with `fn`. Without this rule the name falls through to
+; the generic `@variable` catch-all above, coloring it differently from every other function
+; name in real code (see fizzy's hover-tooltip header renderer, which re-parses just the
+; hover signature text in isolation).
+(function_signature
+  name: (identifier) @function)
+
 ; Modules (@import / @cImport — builtin stays @function.builtin)
 (variable_declaration
   (identifier) @module
