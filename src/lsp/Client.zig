@@ -200,6 +200,7 @@ completion_resolve_supported: bool = false,
 shutdown: std.atomic.Value(bool) = .init(false),
 
 reader_thread: ?std.Thread = null,
+stderr_thread: ?std.Thread = null,
 dispatch_thread: ?std.Thread = null,
 
 write_lock: SpinLock = .{},
@@ -888,8 +889,7 @@ fn spawnAndHandshake(self: *Client, io: std.Io) !void {
     };
 
     self.reader_thread = try std.Thread.spawn(.{}, readerThreadMain, .{ self, io });
-    const stderr_thread = try std.Thread.spawn(.{}, stderrDrainThreadMain, .{ self, io });
-    stderr_thread.detach();
+    self.stderr_thread = try std.Thread.spawn(.{}, stderrDrainThreadMain, .{ self, io });
 
     const root_uri = try UriUtil.pathToUri(gpa, root);
     defer gpa.free(root_uri);
@@ -961,6 +961,10 @@ fn shutdownProcess(self: *Client) void {
     if (self.reader_thread) |t| {
         t.join();
         self.reader_thread = null;
+    }
+    if (self.stderr_thread) |t| {
+        t.join();
+        self.stderr_thread = null;
     }
     if (self.dispatch_thread) |t| {
         t.join();
