@@ -1,6 +1,6 @@
 .{
     .name = .zig,
-    .version = "0.2.2",
+    .version = "0.2.3",
     .minimum_zig_version = "0.16.0",
     .paths = .{
         "build.zig",
@@ -14,9 +14,8 @@
     .fingerprint = 0xc1ce1081b7e074e3,
     .dependencies = .{
         .fizzy = .{
-            .url = "https://github.com/fizzyedit/fizzy/archive/f08af13963d8f7ff18b7d3015f0842f0a9b40079.tar.gz",
-            .hash = "fizzy-0.0.20-c46aVsMmNgAmBu6Zh91fn304UEThev86OjpnBhKZ5wlK",
-
+            .url = "https://github.com/fizzyedit/fizzy/archive/68d1013633cb71f864c80f69ee4cc85f44d01ee7.tar.gz",
+            .hash = "fizzy-0.0.20-c46aVr1ANgC7yrsF-QtXD6ls5rMhXRSsGH0SlpbRTJwo",
             //.path = "../../fizzy",
         },
     },
