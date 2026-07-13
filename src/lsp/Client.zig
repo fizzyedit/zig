@@ -1175,6 +1175,15 @@ fn dispatchThreadMain(self: *Client, io: std.Io) void {
             defer gpa.free(j.path);
             defer gpa.free(j.bytes);
             defer self.clearInFlight(j.key);
+            // Unconditional, regardless of how the job ended (cached success — already
+            // refreshes itself via `cacheHoverResult`, so this is a harmless extra wakeup —
+            // timeout, or a thrown error partway through). The per-branch `dvui.refresh` calls
+            // inside `runHoverJob` only cover the timeout path explicitly; a thrown error (bad
+            // JSON, an alloc failure, anything else caught below) used to leave `in_flight`
+            // cleared but the UI thread asleep, so the placeholder never got another chance to
+            // retry — exactly the same "stuck until an unrelated redraw" symptom the timeout
+            // fix targeted, just via a different exit path.
+            defer dvui.refresh(self.window, @src(), null);
             self.runHoverJob(io, j) catch |err| {
                 dvui.log.warn("zig: runHoverJob failed: {any}", .{err});
             };
@@ -1185,6 +1194,7 @@ fn dispatchThreadMain(self: *Client, io: std.Io) void {
             defer gpa.free(pc.path);
             defer gpa.free(pc.bytes);
             defer self.clearCompletionInFlight(pc.key);
+            defer dvui.refresh(self.window, @src(), null);
             self.runCompletionJob(io, pc) catch |err| {
                 dvui.log.warn("zig: runCompletionJob failed: {any}", .{err});
             };
@@ -1195,6 +1205,7 @@ fn dispatchThreadMain(self: *Client, io: std.Io) void {
             defer gpa.free(ps.path);
             defer gpa.free(ps.bytes);
             defer self.clearSignatureHelpInFlight(ps.key);
+            defer dvui.refresh(self.window, @src(), null);
             self.runSignatureHelpJob(io, ps) catch |err| {
                 dvui.log.warn("zig: runSignatureHelpJob failed: {any}", .{err});
             };
@@ -1208,6 +1219,7 @@ fn dispatchThreadMain(self: *Client, io: std.Io) void {
         if (rjob) |rj| {
             defer gpa.free(rj.raw_item_json);
             defer self.clearResolveInFlight(rj.key);
+            defer dvui.refresh(self.window, @src(), null);
             self.runResolveJob(io, rj) catch |err| {
                 dvui.log.warn("zig: runResolveJob failed: {any}", .{err});
             };
@@ -1233,6 +1245,11 @@ fn runHoverJob(self: *Client, io: std.Io, j: HoverJob) !void {
     const body = self.waitForSlot(io, req.id, req.slot, hover_timeout_ms) orelse {
         // Deliberately not cached: no response at all is inconclusive (could be a slow
         // first parse of a huge file), unlike the definitive "no hover here" answers below.
+        // `in_flight` for this key is about to be cleared by the dispatch loop's `defer`
+        // (which also wakes the UI thread — see `dispatchThreadMain`), so the client is ready
+        // to retry the instant something re-polls `hover()`. The eventual real response (if
+        // zls answers after all, just late) has nowhere to land by then anyway: `waitForSlot`
+        // already destroyed this request's slot.
         return;
     };
     defer gpa.free(body);
@@ -1311,7 +1328,8 @@ fn runCompletionJob(self: *Client, io: std.Io, pc: PendingCompletion) !void {
     });
     const body = self.waitForSlot(io, req.id, req.slot, completion_timeout_ms) orelse {
         // Deliberately not cached: no response at all is inconclusive, same rationale as
-        // hover's timeout case.
+        // hover's timeout case. The dispatch loop's `defer` wakes the UI thread regardless of
+        // how this job ends — see `dispatchThreadMain`.
         return;
     };
     defer gpa.free(body);
@@ -1493,7 +1511,8 @@ fn runSignatureHelpJob(self: *Client, io: std.Io, ps: PendingSignatureHelp) !voi
     });
     const body = self.waitForSlot(io, req.id, req.slot, signature_help_timeout_ms) orelse {
         // Deliberately not cached: no response at all is inconclusive, same rationale as
-        // hover's/completion's timeout case.
+        // hover's/completion's timeout case. The dispatch loop's `defer` wakes the UI thread
+        // regardless of how this job ends — see `dispatchThreadMain`.
         return;
     };
     defer gpa.free(body);
@@ -1577,7 +1596,8 @@ fn runResolveJob(self: *Client, io: std.Io, rj: ResolveJob) !void {
     const req = try self.sendRequest(io, "completionItem/resolve", item_parsed.value);
     const body = self.waitForSlot(io, req.id, req.slot, completion_resolve_timeout_ms) orelse {
         // Deliberately not cached: no response at all is inconclusive, same rationale as
-        // hover's/completion's timeout case.
+        // hover's/completion's timeout case. The dispatch loop's `defer` wakes the UI thread
+        // regardless of how this job ends — see `dispatchThreadMain`.
         return;
     };
     defer gpa.free(body);
