@@ -87,6 +87,14 @@ const CacheEntry = struct {
     /// expire: once zls has real text for a position, that answer isn't going stale the way
     /// "zls hasn't looked yet" is.
     cached_at: std.Io.Clock.Timestamp,
+    /// Only meaningful when `text == null`. False means this negative hasn't been retried
+    /// yet — per `cached_at`'s doc comment, a *single* negative answer is routinely just zls
+    /// still indexing, not a real verdict, so `hover()` reports it to callers as still-pending
+    /// (`null`) rather than "confirmed nothing" until a *second* consecutive negative answer
+    /// lands for this exact key (tracked across the retry via `unconfirmed_negative_keys`,
+    /// since this entry itself gets removed to force the retry). Only once `true` does
+    /// `hover()` return `Some(.{.text=""})` — see `HoverResult`'s doc comment on the SDK side.
+    confirmed_negative: bool = false,
 };
 
 const HoverJob = struct {
@@ -179,12 +187,6 @@ const PendingSignatureHelp = struct {
 };
 
 state: std.atomic.Value(StateTag) = .init(.not_started),
-/// Captured on the draw thread in `ensureStarted` (`hover`/`gotoDefinition`/`completion` all
-/// call it first). Lets the reader/dispatch threads call `dvui.refresh(self.window, ...)`
-/// after populating a cache entry, so a result that lands with the mouse stationary — no
-/// other GUI event pending — still triggers a redraw instead of sitting shown-but-unconsumed
-/// until an unrelated input event. Same pattern as `pixi`'s `PackJob.zig`.
-window: ?*dvui.Window = null,
 workspace_root: ?[]u8 = null,
 child: ?std.process.Child = null,
 next_id: std.atomic.Value(i64) = .init(1),
@@ -215,6 +217,24 @@ hover_cache_lock: SpinLock = .{},
 hover_cache: std.AutoHashMapUnmanaged(CacheKey, CacheEntry) = .empty,
 in_flight: std.AutoHashMapUnmanaged(CacheKey, void) = .empty,
 cache_seq: u64 = 0,
+/// Deadline a negative hover entry will expire at, set whenever one is cached — the dispatch
+/// thread polls this every loop tick (already running every 20ms regardless of whether the
+/// GUI is asleep) and wakes the app once it elapses. Without this, a stationary hover whose
+/// first answer was a transient "zls hasn't indexed this yet" negative (see `CacheEntry`'s
+/// doc comment on why that's expected and self-correcting) never gets retried: `hover()` is
+/// only ever called from a draw frame, the GUI goes to sleep once the mouse stops generating
+/// events, and nothing is left to notice the TTL lapsed — the placeholder just sits there
+/// until some unrelated real input forces a frame. Guarded by `hover_cache_lock` (already
+/// held everywhere this needs touching). Null = nothing pending.
+pending_negative_wake: ?std.Io.Clock.Timestamp = null,
+/// Keys that have had exactly one negative answer, whose retry is still outstanding —
+/// consulted (and cleared) by `cacheHoverResult` when the retry's answer lands, to tell "this
+/// is the second negative in a row, confirm it" apart from "this is the first negative for a
+/// key I've never seen before". Needed because the *entry* for an unconfirmed key gets
+/// removed from `hover_cache` (by `hover()`, once its TTL elapses) to force the retry, so by
+/// the time the retry completes there's nothing left in `hover_cache` itself to compare
+/// against. Guarded by `hover_cache_lock`.
+unconfirmed_negative_keys: std.AutoHashMapUnmanaged(CacheKey, void) = .empty,
 
 queue_lock: SpinLock = .{},
 queue: std.ArrayListUnmanaged(HoverJob) = .empty,
@@ -436,20 +456,35 @@ pub fn hover(self: *Client, path: []const u8, bytes: []const u8, byte_offset: us
 
     self.hover_cache_lock.lock();
     if (self.hover_cache.get(key)) |entry| {
-        // A negative entry past its TTL is treated as a miss rather than a hit — see
-        // `CacheEntry.cached_at`'s doc comment for why negative results specifically need to
-        // expire. `fetchRemove` (not just falling through) so the stale entry doesn't linger
-        // in the map racing a fresh `cacheHoverResult` write for the same key.
-        if (entry.text == null and entry.cached_at.untilNow(dvui.io).raw.toMilliseconds() >= hover_negative_cache_ttl_ms) {
-            _ = self.hover_cache.remove(key);
+        if (entry.text == null and !entry.confirmed_negative) {
+            // Unconfirmed negative — a single "no info" answer, per `CacheEntry`'s doc
+            // comment, is routinely just zls still indexing, not a real verdict. Report it as
+            // still-pending (like an in-flight request) until the retry confirms it one way
+            // or the other, rather than asserting a possibly-wrong "nothing here" the moment
+            // the first answer lands.
+            if (entry.cached_at.untilNow(dvui.io).raw.toMilliseconds() >= hover_negative_cache_ttl_ms) {
+                // TTL elapsed — remove to force the retry below. `unconfirmed_negative_keys`
+                // (set when this entry was first cached) remembers this key already had one
+                // negative, surviving the removal so `cacheHoverResult` can tell a repeat
+                // negative apart from a fresh one once the retry's answer lands.
+                _ = self.hover_cache.remove(key);
+            } else {
+                self.hover_cache_lock.unlock();
+                return null;
+            }
         } else {
             // Copy out *while still holding the lock* — see `hover_return_scratch`'s doc
             // comment for why: this is the only thing preventing a concurrent eviction on the
             // dispatch thread from freeing `entry.text` while we're still reading it.
+            //
+            // A confirmed negative entry (`entry.text == null`, two consecutive "no hover
+            // info" answers) returns `Some(.{.text = ""})`, not `null` — `null` is reserved
+            // for "still pending" so the caller can tell "genuinely nothing to show" apart
+            // from "ask again next frame". See `HoverResult`'s doc comment on the SDK side.
             const result: ?sdk.language.HoverResult = if (entry.text) |t| blk: {
                 const copy = self.setHoverReturnScratch(gpa, t) orelse break :blk null;
                 break :blk .{ .text = copy };
-            } else null;
+            } else .{ .text = "" };
             self.hover_cache_lock.unlock();
             return result;
         }
@@ -620,11 +655,11 @@ pub fn completion(self: *Client, path: []const u8, bytes: []const u8, byte_offse
     if (!self.ensureStarted(path)) return null;
     if (byte_offset == 0 or byte_offset > bytes.len) return null;
 
-    // Cheap local pre-filter, not an LSP requirement: only identifier-continuing or
-    // member-access positions are worth asking zls about — skips wasted round-trips on
-    // cursor moves through whitespace/punctuation.
+    // Cheap local pre-filter, not an LSP requirement: only identifier-continuing,
+    // member-access, or builtin (`@`) positions are worth asking zls about — skips wasted
+    // round-trips on cursor moves through whitespace/punctuation.
     const prev = bytes[byte_offset - 1];
-    if (!(std.ascii.isAlphanumeric(prev) or prev == '_' or prev == '.')) return null;
+    if (!(std.ascii.isAlphanumeric(prev) or prev == '_' or prev == '.' or prev == '@')) return null;
 
     const gpa = sdk.allocator();
     const key: CacheKey = .{ .path_hash = std.hash.Wyhash.hash(0, path), .byte_offset = byte_offset, .content_hash = std.hash.Wyhash.hash(0, bytes) };
@@ -841,10 +876,6 @@ fn deriveFallbackRoot(self: *Client, doc_path: []const u8) void {
 /// Non-blocking: kicks off a background spawn+handshake at most once per `not_started`
 /// period. Returns whether the client is ready to accept requests right now.
 fn ensureStarted(self: *Client, doc_path: []const u8) bool {
-    // Cheap pointer store; refreshed every call (not just the first) since this only ever
-    // runs on the draw thread, so there's no race to guard against.
-    self.window = dvui.currentWindow();
-
     switch (self.state.load(.acquire)) {
         .ready => return true,
         .unavailable => return false,
@@ -1167,6 +1198,8 @@ fn stderrDrainThreadMain(self: *Client, io: std.Io) void {
 fn dispatchThreadMain(self: *Client, io: std.Io) void {
     const gpa = sdk.allocator();
     while (!self.shutdown.load(.acquire)) {
+        self.checkPendingNegativeWake();
+
         self.queue_lock.lock();
         const job: ?HoverJob = if (self.queue.items.len > 0) self.queue.orderedRemove(0) else null;
         self.queue_lock.unlock();
@@ -1177,13 +1210,13 @@ fn dispatchThreadMain(self: *Client, io: std.Io) void {
             defer self.clearInFlight(j.key);
             // Unconditional, regardless of how the job ended (cached success — already
             // refreshes itself via `cacheHoverResult`, so this is a harmless extra wakeup —
-            // timeout, or a thrown error partway through). The per-branch `dvui.refresh` calls
+            // timeout, or a thrown error partway through). The per-branch `host.refresh()` calls
             // inside `runHoverJob` only cover the timeout path explicitly; a thrown error (bad
             // JSON, an alloc failure, anything else caught below) used to leave `in_flight`
             // cleared but the UI thread asleep, so the placeholder never got another chance to
             // retry — exactly the same "stuck until an unrelated redraw" symptom the timeout
             // fix targeted, just via a different exit path.
-            defer dvui.refresh(self.window, @src(), null);
+            defer sdk.refresh();
             self.runHoverJob(io, j) catch |err| {
                 dvui.log.warn("zig: runHoverJob failed: {any}", .{err});
             };
@@ -1194,7 +1227,7 @@ fn dispatchThreadMain(self: *Client, io: std.Io) void {
             defer gpa.free(pc.path);
             defer gpa.free(pc.bytes);
             defer self.clearCompletionInFlight(pc.key);
-            defer dvui.refresh(self.window, @src(), null);
+            defer sdk.refresh();
             self.runCompletionJob(io, pc) catch |err| {
                 dvui.log.warn("zig: runCompletionJob failed: {any}", .{err});
             };
@@ -1205,7 +1238,7 @@ fn dispatchThreadMain(self: *Client, io: std.Io) void {
             defer gpa.free(ps.path);
             defer gpa.free(ps.bytes);
             defer self.clearSignatureHelpInFlight(ps.key);
-            defer dvui.refresh(self.window, @src(), null);
+            defer sdk.refresh();
             self.runSignatureHelpJob(io, ps) catch |err| {
                 dvui.log.warn("zig: runSignatureHelpJob failed: {any}", .{err});
             };
@@ -1219,7 +1252,7 @@ fn dispatchThreadMain(self: *Client, io: std.Io) void {
         if (rjob) |rj| {
             defer gpa.free(rj.raw_item_json);
             defer self.clearResolveInFlight(rj.key);
-            defer dvui.refresh(self.window, @src(), null);
+            defer sdk.refresh();
             self.runResolveJob(io, rj) catch |err| {
                 dvui.log.warn("zig: runResolveJob failed: {any}", .{err});
             };
@@ -1279,6 +1312,20 @@ fn runHoverJob(self: *Client, io: std.Io, j: HoverJob) !void {
     self.cacheHoverResult(gpa, j.key, owned_text);
 }
 
+/// Called once per dispatch-loop tick (~20ms, regardless of GUI sleep state — see
+/// `pending_negative_wake`'s doc comment). Wakes the app exactly once a pending negative
+/// hover entry's TTL has elapsed, so `hover()` gets a chance to notice the expiry and retry.
+fn checkPendingNegativeWake(self: *Client) void {
+    self.hover_cache_lock.lock();
+    const due = if (self.pending_negative_wake) |cached_at|
+        cached_at.untilNow(dvui.io).raw.toMilliseconds() >= hover_negative_cache_ttl_ms
+    else
+        false;
+    if (due) self.pending_negative_wake = null;
+    self.hover_cache_lock.unlock();
+    if (due) sdk.refresh();
+}
+
 /// Stores a hover result (or a negative `null` entry — see `CacheEntry.text`) in the cache
 /// and evicts the oldest entry if it's now over `hover_cache_limit`. `owned_text`, if
 /// non-null, must already be owned by `gpa` — this function takes ownership of it.
@@ -1286,14 +1333,37 @@ fn cacheHoverResult(self: *Client, gpa: std.mem.Allocator, key: CacheKey, owned_
     self.hover_cache_lock.lock();
     defer self.hover_cache_lock.unlock();
     self.cache_seq += 1;
-    self.hover_cache.put(gpa, key, .{ .text = owned_text, .seq = self.cache_seq, .cached_at = std.Io.Clock.Timestamp.now(dvui.io, .awake) }) catch {
+    const cached_at: std.Io.Clock.Timestamp = .now(dvui.io, .awake);
+    var confirmed_negative = false;
+    if (owned_text == null) {
+        if (self.unconfirmed_negative_keys.remove(key)) {
+            // A negative answer already for this exact key, still awaiting its retry — this
+            // is that retry, and it's negative again. Confirm it.
+            confirmed_negative = true;
+        } else {
+            // First negative ever seen for this key — remember it so the retry (once its
+            // answer lands) can tell it apart from a fresh key, and schedule the dispatch
+            // thread to nudge the app awake once its TTL lapses so the retry actually happens
+            // instead of the placeholder sitting forever — see `pending_negative_wake`'s doc
+            // comment.
+            _ = self.unconfirmed_negative_keys.put(gpa, key, {}) catch {};
+            self.pending_negative_wake = cached_at;
+        }
+    } else {
+        // A positive answer clears any stale "had one negative" memory for this key — not
+        // load-bearing (a positive `CacheEntry` never even reads `confirmed_negative`), just
+        // tidy: without this, an old negative could be sitting in `unconfirmed_negative_keys`
+        // for a key whose next answer turned out positive, and linger there unused forever.
+        _ = self.unconfirmed_negative_keys.remove(key);
+    }
+    self.hover_cache.put(gpa, key, .{ .text = owned_text, .seq = self.cache_seq, .cached_at = cached_at, .confirmed_negative = confirmed_negative }) catch {
         if (owned_text) |t| gpa.free(t);
         return;
     };
     self.evictOldestIfNeededLocked(gpa);
     // The mouse may have sat still since the request went out — with no other GUI event
     // pending, a redraw wouldn't otherwise happen until something unrelated triggers one.
-    dvui.refresh(self.window, @src(), null);
+    sdk.refresh();
 }
 
 fn evictOldestIfNeededLocked(self: *Client, gpa: std.mem.Allocator) void {
@@ -1462,7 +1532,7 @@ fn cacheCompletionResult(self: *Client, gpa: std.mem.Allocator, key: CacheKey, o
     // Same rationale as `cacheHoverResult` — the debounce timer can fire well after the last
     // keystroke, with the mouse and keyboard both idle, so the dropdown needs its own kick to
     // actually appear instead of waiting for the next unrelated input event.
-    dvui.refresh(self.window, @src(), null);
+    sdk.refresh();
 }
 
 fn evictOldestCompletionIfNeededLocked(self: *Client, gpa: std.mem.Allocator) void {
@@ -1561,7 +1631,7 @@ fn cacheSignatureHelpResult(self: *Client, gpa: std.mem.Allocator, key: CacheKey
     self.evictOldestSignatureHelpIfNeededLocked(gpa);
     // Same rationale as `cacheCompletionResult` — the debounce timer can fire with the mouse
     // and keyboard both idle by then.
-    dvui.refresh(self.window, @src(), null);
+    sdk.refresh();
 }
 
 fn evictOldestSignatureHelpIfNeededLocked(self: *Client, gpa: std.mem.Allocator) void {
@@ -1642,7 +1712,7 @@ fn cacheResolveResult(self: *Client, gpa: std.mem.Allocator, key: ResolveKey, ow
     self.evictOldestResolveIfNeededLocked(gpa);
     // Same rationale as `cacheCompletionResult` — the dropdown's info panel needs its own kick
     // to actually show the newly-resolved text instead of waiting for unrelated input.
-    dvui.refresh(self.window, @src(), null);
+    sdk.refresh();
 }
 
 fn evictOldestResolveIfNeededLocked(self: *Client, gpa: std.mem.Allocator) void {
@@ -1742,7 +1812,10 @@ fn wordStartBefore(bytes: []const u8, byte_offset: usize) usize {
     var i = byte_offset;
     while (i > 0) {
         const c = bytes[i - 1];
-        if (!(std.ascii.isAlphanumeric(c) or c == '_')) break;
+        // `@` is part of Zig builtin names (`@import`) — without it, typing `@im` derives
+        // the already-typed prefix as just `im`, which fails to match candidates whose
+        // insert text starts with `@` and drops every builtin from the list.
+        if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '@')) break;
         i -= 1;
     }
     return i;
