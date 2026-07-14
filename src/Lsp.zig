@@ -1,14 +1,39 @@
-//! zls-backed hover + Ctrl/Cmd-click goto-definition for `.zig`/`.zon` files. Owns the single
-//! `lsp.Client` instance for this plugin; see `lsp/Client.zig` for the actual protocol work.
+//! zls-backed hover, Ctrl/Cmd-click goto-definition, completion, signature help, and format
+//! for `.zig`/`.zon` files, built on the shared, server-agnostic `core.lsp.Client` (see
+//! `src/core/lsp/Client.zig` in the fizzy repo for the actual JSON-RPC/threading/caching
+//! work). This file supplies only what's specific to zls: the spawn command, the
+//! `languageId`, the host callbacks, and the `.zig`/`.zon` extension gate.
 const std = @import("std");
 const zig = @import("../zig.zig");
 const sdk = zig.sdk;
-const Client = @import("lsp/Client.zig");
+const core = zig.core;
+const Client = core.lsp.Client;
 
 var client: Client = .{};
 
 fn isZigFile(ext: []const u8) bool {
     return std.ascii.eqlIgnoreCase(ext, ".zig") or std.ascii.eqlIgnoreCase(ext, ".zon");
+}
+
+fn getFolder() ?[]const u8 {
+    return sdk.host().folder();
+}
+
+fn logWarn(source: []const u8, msg: []const u8) void {
+    sdk.host().logLine(.warn, source, msg);
+}
+
+/// Wires the shared LSP client to zls — called once from `plugin.register(host)`, the
+/// earliest point host-injected values (`sdk.allocator()`, `sdk.host()`) are valid.
+pub fn configure() void {
+    client.configure(.{
+        .command = &.{"zls"},
+        .language_id = "zig",
+        .allocator = sdk.allocator(),
+        .getFolder = getFolder,
+        .logWarn = logWarn,
+        .refresh = sdk.refresh,
+    });
 }
 
 pub fn onFolderOpen(_: *anyopaque, _: std.mem.Allocator) void {

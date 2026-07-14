@@ -64,6 +64,7 @@ pub fn register(host: *sdk.Host) !void {
     plugin.state = @ptrCast(&plugin_state);
     try host.registerPlugin(&plugin);
     try host.registerPluginIcon(.{ .owner = &plugin, .draw = drawPluginIcon });
+    Lsp.configure();
     try host.registerLanguageSupport(language_support);
 }
 
