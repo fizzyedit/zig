@@ -34,6 +34,7 @@ fn log(source: []const u8, level: std.log.Level, msg: []const u8) void {
 }
 
 fn currentEnviron() std.process.Environ {
+    if (builtin.os.tag == .windows) return .{ .block = .global };
     return .{ .block = .{ .slice = std.mem.span(@as([*:null]?[*:0]const u8, @ptrCast(std.c.environ))) } };
 }
 
