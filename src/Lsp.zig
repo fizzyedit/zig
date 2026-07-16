@@ -19,8 +19,8 @@ fn getFolder() ?[]const u8 {
     return sdk.host().folder();
 }
 
-fn logWarn(source: []const u8, msg: []const u8) void {
-    sdk.host().logLine(.warn, source, msg);
+fn log(source: []const u8, level: std.log.Level, msg: []const u8) void {
+    sdk.host().logLine(level, source, msg);
 }
 
 /// Wires the shared LSP client to zls — called once from `plugin.register(host)`, the
@@ -31,7 +31,7 @@ pub fn configure() void {
         .language_id = "zig",
         .allocator = sdk.allocator(),
         .getFolder = getFolder,
-        .logWarn = logWarn,
+        .log = log,
         .refresh = sdk.refresh,
     });
 }
