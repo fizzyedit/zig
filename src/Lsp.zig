@@ -105,16 +105,23 @@ fn resolveLoginShellPath(gpa: std.mem.Allocator, io: std.Io) ?[]const u8 {
     return gpa.dupe(u8, path_line) catch null;
 }
 
-/// Resolves an absolute path to an executable, checked in priority order:
+/// Resolves an absolute path to an executable, checked in priority order (POSIX only —
+/// Windows returns the bare exe name immediately, see below):
 ///   1. The process's own inherited PATH — identical to a plain `execvp(name)`, so this
 ///      changes nothing for anyone it already works for (e.g. running from a terminal).
-///   2. (macOS/Linux only) the user's actual login-shell PATH, recovered by spawning their
-///      shell once (see `resolveLoginShellPath`, cached in `shell_path` across repeat
-///      calls so resolving both `zls` and `zig` only spawns one shell) — covers an install
-///      anywhere on PATH, not just conventional per-user directories.
+///   2. The user's actual login-shell PATH, recovered by spawning their shell once (see
+///      `resolveLoginShellPath`, cached in `shell_path` across repeat calls so resolving both
+///      `zls` and `zig` only spawns one shell) — covers an install anywhere on PATH, not just
+///      conventional per-user directories.
 /// Falls back to the bare exe name (today's behavior, including its error path) if neither
-/// finds anything — Windows never needs to look past PATH, since GUI-launched apps there
-/// inherit the same session-wide PATH a terminal does.
+/// finds anything.
+///
+/// Windows never needs any of this — a GUI-launched app there already inherits the same
+/// session-wide PATH a terminal does, so `std.process.spawn`'s own PATH search (over the bare
+/// name) already finds it. Short-circuiting immediately also avoids ever reading
+/// `currentEnviron()`'s `.global` block on Windows (the new `std.process.Environ` Windows
+/// path, added for this lookup) — a Windows-only "reached unreachable code" crash on every
+/// hover was traced back to it.
 fn resolveExecutable(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -123,18 +130,18 @@ fn resolveExecutable(
     posix_name: []const u8,
     windows_name: []const u8,
 ) []const u8 {
-    const exe_name = if (builtin.os.tag == .windows) windows_name else posix_name;
+    if (builtin.os.tag == .windows) return windows_name;
+
+    const exe_name = posix_name;
 
     if (std.process.Environ.getAlloc(environ, gpa, "PATH")) |path| {
         defer gpa.free(path);
         if (findInPathList(gpa, io, path, exe_name)) |found| return found;
     } else |_| {}
 
-    if (builtin.os.tag != .windows) {
-        if (shell_path.* == null) shell_path.* = resolveLoginShellPath(gpa, io);
-        if (shell_path.*) |sp| {
-            if (findInPathList(gpa, io, sp, exe_name)) |found| return found;
-        }
+    if (shell_path.* == null) shell_path.* = resolveLoginShellPath(gpa, io);
+    if (shell_path.*) |sp| {
+        if (findInPathList(gpa, io, sp, exe_name)) |found| return found;
     }
 
     return exe_name;
