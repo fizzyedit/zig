@@ -5,9 +5,8 @@
 //! `languageId`, the host callbacks, and the `.zig`/`.zon` extension gate.
 const std = @import("std");
 const builtin = @import("builtin");
-const zig = @import("../zig.zig");
-const sdk = zig.sdk;
-const core = zig.core;
+const sdk = @import("fizzy_sdk");
+const core = @import("core");
 const Client = core.lsp.Client;
 
 var client: Client = .{};

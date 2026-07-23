@@ -1,23 +1,16 @@
 const std = @import("std");
-const zig = @import("../zig.zig");
-const sdk = zig.sdk;
-const dvui = zig.dvui;
-const Highlight = @import("Highlight.zig");
-const Lsp = @import("Lsp.zig");
+const sdk = @import("fizzy_sdk");
+const dvui = @import("dvui");
+const Highlight = @import("src/Highlight.zig");
+const Lsp = @import("src/Lsp.zig");
 
-const plugin_options = @import("fizzy_plugin_options");
-
-pub const manifest = sdk.PluginManifest{
-    .id = "zig",
-    .name = "Zig",
-    .version = plugin_options.version,
-};
+pub const plugin_options = @import("fizzy_plugin_options");
 
 var plugin: sdk.Plugin = .{
     .state = undefined,
     .vtable = &vtable,
-    .id = "zig",
-    .display_name = "Zig",
+    .id = plugin_options.id,
+    .display_name = plugin_options.name,
 };
 
 const vtable: sdk.Plugin.VTable = .{
@@ -45,7 +38,7 @@ const language_vtable: sdk.LanguageSupport.VTable = .{
     .format = Lsp.format,
 };
 
-const icon_png = @embedFile("../ICON.png");
+const icon_png = @embedFile("ICON.png");
 const icon_source: dvui.ImageSource = .{ .imageFile = .{
     .bytes = icon_png,
     .name = "ICON.png",

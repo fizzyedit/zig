@@ -1,8 +1,7 @@
 //! Zig/ZON tree-sitter highlighting for the text editor.
 const std = @import("std");
-const zig = @import("../zig.zig");
-const dvui = zig.dvui;
-const sdk = zig.sdk;
+const dvui = @import("dvui");
+const sdk = @import("fizzy_sdk");
 
 const zig_queries = @embedFile("../queries/zig.scm");
 
