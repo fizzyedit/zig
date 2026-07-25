@@ -151,6 +151,49 @@ fn resolveExecutable(
 pub fn configure() void {
     const gpa = sdk.allocator();
 
+    // Deliberately no executable resolution here — see `ensureResolved`. `register(host)` runs
+    // on fizzy's startup path, and everything in it is time the window doesn't appear.
+    command_buf[0] = if (builtin.os.tag == .windows) "zls.exe" else "zls";
+
+    // Reserve the key now so `ensureResolved` can fill it in by mutating the value *in place*.
+    // `Client.Config` stores `initialization_options` by value, and a `std.json.ObjectMap` copy
+    // shares this map's backing allocation: overwriting an existing value is visible through
+    // that copy, whereas `put`ing a new key later might reallocate and would not be.
+    init_options.put(gpa, "zig_exe_path", .{ .string = "" }) catch {};
+
+    client.configure(.{
+        .command = &command_buf,
+        .language_id = "zig",
+        .allocator = gpa,
+        .getFolder = getFolder,
+        .log = log,
+        .refresh = sdk.refresh,
+        .initialization_options = .{ .object = init_options },
+    });
+}
+
+/// Whether `ensureResolved` has already done its (expensive, once-per-process) work.
+var resolved = false;
+
+/// Resolves the `zls` and `zig` executable paths, at most once per process.
+///
+/// This is deferred out of `configure()` because resolution can cost **~450ms**: when neither
+/// binary is on the inherited `PATH` — the normal case for a GUI launch, where launchd hands the
+/// app a bare `/usr/bin:/bin:/usr/sbin:/sbin` — `resolveLoginShellPath` spawns the user's shell
+/// in interactive+login mode, which sources their full `.zshrc`. Doing that inside
+/// `register(host)` put the whole cost on fizzy's startup path, delaying the window by roughly
+/// half a second on every single launch even if no Zig file was ever opened.
+///
+/// Called from each `.zig`/`.zon`-gated entry point below rather than from `configure` or
+/// `onFolderOpen`, so it runs only when the user actually touches a Zig file — and always
+/// before `Client` can spawn the server, since every spawn is kicked off from one of those
+/// entry points (`Client.ensureStarted`) on this same thread.
+fn ensureResolved() void {
+    if (resolved) return;
+    resolved = true;
+
+    const gpa = sdk.allocator();
+
     var threaded: std.Io.Threaded = .init(gpa, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -167,17 +210,7 @@ pub fn configure() void {
     // `zig_exe_path` sidesteps that rather than relying on env inheritance to carry our
     // fix-up through to a child process we don't control the spawn options of.
     const zig_path = resolveExecutable(gpa, io, environ, &shell_path, "zig", "zig.exe");
-    init_options.put(gpa, "zig_exe_path", .{ .string = zig_path }) catch {};
-
-    client.configure(.{
-        .command = &command_buf,
-        .language_id = "zig",
-        .allocator = gpa,
-        .getFolder = getFolder,
-        .log = log,
-        .refresh = sdk.refresh,
-        .initialization_options = .{ .object = init_options },
-    });
+    if (init_options.getPtr("zig_exe_path")) |slot| slot.* = .{ .string = zig_path };
 }
 
 pub fn onFolderOpen(_: *anyopaque, _: std.mem.Allocator) void {
@@ -194,26 +227,31 @@ pub fn deinit() void {
 
 pub fn hover(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize) ?sdk.language.HoverResult {
     if (!isZigFile(ext)) return null;
+    ensureResolved();
     return client.hover(path, bytes, byte_offset);
 }
 
 pub fn gotoDefinition(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize) ?sdk.language.DefinitionLocation {
     if (!isZigFile(ext)) return null;
+    ensureResolved();
     return client.gotoDefinition(path, bytes, byte_offset);
 }
 
 pub fn completion(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize) ?[]const sdk.language.CompletionItem {
     if (!isZigFile(ext)) return null;
+    ensureResolved();
     return client.completion(path, bytes, byte_offset);
 }
 
 pub fn signatureHelp(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize) ?sdk.language.SignatureHelpResult {
     if (!isZigFile(ext)) return null;
+    ensureResolved();
     return client.signatureHelp(path, bytes, byte_offset);
 }
 
 pub fn resolveCompletionDocumentation(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize, index: usize) ?[]const u8 {
     if (!isZigFile(ext)) return null;
+    ensureResolved();
     return client.resolveCompletionDocumentation(path, bytes, byte_offset, index);
 }
 
@@ -223,5 +261,6 @@ pub fn supportsFormat(_: *anyopaque, ext: []const u8) bool {
 
 pub fn format(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8) ?[]const u8 {
     if (!isZigFile(ext)) return null;
+    ensureResolved();
     return client.format(path, bytes);
 }
