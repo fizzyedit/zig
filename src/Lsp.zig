@@ -169,11 +169,16 @@ pub fn configure() void {
         .log = log,
         .refresh = sdk.refresh,
         .initialization_options = .{ .object = init_options },
+        // Resolve `zig_exe_path` on the startup thread (not the UI thread) so a ~450ms
+        // login-shell PATH lookup never blocks window open or file open.
+        .beforeInitialize = ensureResolved,
     });
 }
 
 /// Whether `ensureResolved` has already done its (expensive, once-per-process) work.
 var resolved = false;
+/// Spinlock (`std.atomic.Mutex` has no blocking `lock()`) — same pattern as `Client.SpinLock`.
+var resolve_lock: std.atomic.Mutex = .unlocked;
 
 /// Resolves the `zls` and `zig` executable paths, at most once per process.
 ///
@@ -184,11 +189,15 @@ var resolved = false;
 /// `register(host)` put the whole cost on fizzy's startup path, delaying the window by roughly
 /// half a second on every single launch even if no Zig file was ever opened.
 ///
-/// Called from each `.zig`/`.zon`-gated entry point below rather than from `configure` or
-/// `onFolderOpen`, so it runs only when the user actually touches a Zig file — and always
-/// before `Client` can spawn the server, since every spawn is kicked off from one of those
-/// entry points (`Client.ensureStarted`) on this same thread.
+/// Runs from `Client.Config.beforeInitialize` on the language-server startup thread — before
+/// spawn, so `command[0]` is an absolute path in time for `spawnProcess`, and `zig_exe_path`
+/// is populated before `initialize`. Keeps the ~450ms login-shell PATH lookup off the UI
+/// thread. Spinlock-guarded for the (unlikely) case of a concurrent second call; entry-point
+/// wrappers deliberately do *not* call this, so a hover during startup can't stall the draw
+/// thread waiting on the same lock.
 fn ensureResolved() void {
+    while (!resolve_lock.tryLock()) std.Thread.yield() catch {};
+    defer resolve_lock.unlock();
     if (resolved) return;
     resolved = true;
 
@@ -225,33 +234,37 @@ pub fn deinit() void {
     client.deinit();
 }
 
+/// Fired by the text plugin when a `.zig`/`.zon` document is opened or reloaded — start zls
+/// and `didOpen` immediately so the first hover isn't paying spawn+handshake+index latency.
+pub fn documentOpened(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8) void {
+    if (!isZigFile(ext)) return;
+    // `ensureResolved` runs on the startup thread via `beforeInitialize`, not here — keeps
+    // file-open snappy. `warmUp` only captures `dvui.io` and queues spawn/sync.
+    client.warmUp(path, bytes);
+}
+
 pub fn hover(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize) ?sdk.language.HoverResult {
     if (!isZigFile(ext)) return null;
-    ensureResolved();
     return client.hover(path, bytes, byte_offset);
 }
 
 pub fn gotoDefinition(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize) ?sdk.language.DefinitionLocation {
     if (!isZigFile(ext)) return null;
-    ensureResolved();
     return client.gotoDefinition(path, bytes, byte_offset);
 }
 
 pub fn completion(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize) ?[]const sdk.language.CompletionItem {
     if (!isZigFile(ext)) return null;
-    ensureResolved();
     return client.completion(path, bytes, byte_offset);
 }
 
 pub fn signatureHelp(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize) ?sdk.language.SignatureHelpResult {
     if (!isZigFile(ext)) return null;
-    ensureResolved();
     return client.signatureHelp(path, bytes, byte_offset);
 }
 
 pub fn resolveCompletionDocumentation(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8, byte_offset: usize, index: usize) ?[]const u8 {
     if (!isZigFile(ext)) return null;
-    ensureResolved();
     return client.resolveCompletionDocumentation(path, bytes, byte_offset, index);
 }
 
@@ -261,6 +274,5 @@ pub fn supportsFormat(_: *anyopaque, ext: []const u8) bool {
 
 pub fn format(_: *anyopaque, ext: []const u8, path: []const u8, bytes: []const u8) ?[]const u8 {
     if (!isZigFile(ext)) return null;
-    ensureResolved();
     return client.format(path, bytes);
 }

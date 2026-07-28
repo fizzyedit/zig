@@ -29,6 +29,7 @@ const language_support: sdk.LanguageSupport = .{
 
 const language_vtable: sdk.LanguageSupport.VTable = .{
     .treeSitterHighlight = Highlight.treeSitterHighlight,
+    .documentOpened = Lsp.documentOpened,
     .hover = Lsp.hover,
     .gotoDefinition = Lsp.gotoDefinition,
     .completion = Lsp.completion,
