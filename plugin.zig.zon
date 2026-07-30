@@ -1,6 +1,10 @@
 .{
     .id = "zig",
     .name = "Zig",
-    .version = "0.2.11",
-    .min_sdk_version = "0.1.44",
+    .version = "0.2.12",
+    .min_sdk_version = "0.1.45",
+    .description = "Zig language support for fizzy",
+    .tags = .{ "zig", "language" },
+    .author = "foxnne",
+    .author_url = "https://github.com/foxnne",
 }
