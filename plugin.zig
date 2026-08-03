@@ -64,6 +64,31 @@ pub fn register(host: *sdk.Host) !void {
     try host.registerPluginIcon(.{ .owner = &plugin, .draw = drawPluginIcon });
     Lsp.configure();
     try host.registerLanguageSupport(language_support);
+    try host.registerCommand(.{
+        .id = sdk.Plugin.commandId("zig", "restartLanguageServer"),
+        .owner = &plugin,
+        .title = "Zig: Restart Language Server",
+        .run = cmdRestartLanguageServer,
+    });
+    // Recover from a wedged zls without quitting — lives under Edit next to Format Document.
+    try host.registerMenuSection(.{
+        .id = "zig.menu.edit_section",
+        .parent_menu_id = "fizzy.menu.edit",
+        .owner = &plugin,
+        .draw = drawEditMenuSection,
+    });
+}
+
+fn cmdRestartLanguageServer(_: *anyopaque) !void {
+    Lsp.restart();
+}
+
+fn drawEditMenuSection(_: ?*anyopaque) !void {
+    if (sdk.host().drawMenuItem("Restart Zig Language Server", sdk.Plugin.commandId("zig", "restartLanguageServer"))) {
+        sdk.host().runCommand(sdk.Plugin.commandId("zig", "restartLanguageServer")) catch |err| {
+            dvui.log.warn("zig: restartLanguageServer failed: {any}", .{err});
+        };
+    }
 }
 
 fn deinit(_: *anyopaque) void {

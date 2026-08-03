@@ -230,6 +230,12 @@ pub fn onFolderClose(_: *anyopaque) void {
     client.onFolderClose();
 }
 
+/// Kill and respawn zls — see `Client.restart`. Invoked by the
+/// `zig.restartLanguageServer` Command when hover/completion wedges after a crash.
+pub fn restart() void {
+    client.restart();
+}
+
 pub fn deinit() void {
     client.deinit();
 }
