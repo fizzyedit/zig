@@ -14,8 +14,7 @@
     .fingerprint = 0xc1ce1081b7e074e3,
     .dependencies = .{
         .fizzy = .{
-            .url = "https://github.com/fizzyedit/fizzy/releases/download/sdk-v0.1.49/fizzy-sdk-v0.1.49.tar.gz",
-            .hash = "fizzy-0.1.49-SGBwYyv8DABBKJCCuRB3fvmr8ikfv9kcrGA8mwzPO7su",
+            .path = "../../fizzy/sdk",
         },
     },
 }
