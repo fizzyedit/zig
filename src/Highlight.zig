@@ -14,7 +14,7 @@ fn rgb(r: u8, g: u8, b: u8) dvui.Color {
 }
 
 fn hi(name: []const u8, color: dvui.Color) sdk.HighlightStyle {
-    return .{ .name = name, .opts = .{ .color_text = color } };
+    return .{ .name = name, .opts = .{ .color_text = .{ .color = color } } };
 }
 
 const ident_gold = rgb(0xd5, 0xc6, 0x83);

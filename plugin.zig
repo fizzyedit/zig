@@ -46,8 +46,9 @@ const icon_source: dvui.ImageSource = .{ .imageFile = .{
     .invalidation = .ptr,
 } };
 
-fn drawPluginIcon(_: ?*anyopaque) void {
-    // `expand = .ratio` fits the logo to whatever rect the host reserved (see `Host.PluginIcon`):
+fn paint(_: ?*anyopaque, subject: sdk.Host.Painter.Subject) bool {
+    if (subject != .plugin_logo) return false;
+    // `expand = .ratio` fits the logo to whatever rect the host reserved (see `Host.Painter`):
     // 32px on a plugin-store card, a much smaller row glyph in the settings tree.
     // `min_size_content` is only the size asked for when the host leaves it to us.
     _ = dvui.image(@src(), .{ .source = icon_source, .shrink = .ratio }, .{
@@ -56,12 +57,13 @@ fn drawPluginIcon(_: ?*anyopaque) void {
         .gravity_y = 0.5,
         .min_size_content = .{ .w = 32, .h = 32 },
     });
+    return true;
 }
 
 pub fn register(host: *sdk.Host) !void {
     plugin.state = @ptrCast(&plugin_state);
     try host.registerPlugin(&plugin);
-    try host.registerPluginIcon(.{ .owner = &plugin, .draw = drawPluginIcon });
+    try host.registerPainter(.{ .owner = &plugin, .draw = paint });
     Lsp.configure();
     try host.registerLanguageSupport(language_support);
     try host.registerCommand(.{
