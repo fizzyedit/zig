@@ -1,8 +1,14 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const sdk = @import("fizzy_sdk");
 const dvui = @import("dvui");
 const Highlight = @import("src/Highlight.zig");
 const Lsp = @import("src/Lsp.zig");
+
+/// zls is a subprocess driven from a background thread — neither exists on the web
+/// (wasm32-freestanding), so the web build is highlighting only. Every LSP entry below is
+/// gated on this so `src/Lsp.zig` (and the SDK's `core.lsp`) is never analyzed there.
+const has_lsp = !builtin.target.cpu.arch.isWasm();
 
 pub const plugin_options = @import("fizzy_plugin_options");
 
@@ -15,8 +21,8 @@ var plugin: sdk.Plugin = .{
 
 const vtable: sdk.Plugin.VTable = .{
     .deinit = deinit,
-    .onFolderOpen = Lsp.onFolderOpen,
-    .onFolderClose = Lsp.onFolderClose,
+    .onFolderOpen = if (has_lsp) Lsp.onFolderOpen else null,
+    .onFolderClose = if (has_lsp) Lsp.onFolderClose else null,
 };
 
 var plugin_state: u8 = 0;
@@ -29,14 +35,14 @@ const language_support: sdk.LanguageSupport = .{
 
 const language_vtable: sdk.LanguageSupport.VTable = .{
     .treeSitterHighlight = Highlight.treeSitterHighlight,
-    .documentOpened = Lsp.documentOpened,
-    .hover = Lsp.hover,
-    .gotoDefinition = Lsp.gotoDefinition,
-    .completion = Lsp.completion,
-    .signatureHelp = Lsp.signatureHelp,
-    .resolveCompletionDocumentation = Lsp.resolveCompletionDocumentation,
-    .supportsFormat = Lsp.supportsFormat,
-    .format = Lsp.format,
+    .documentOpened = if (has_lsp) Lsp.documentOpened else null,
+    .hover = if (has_lsp) Lsp.hover else null,
+    .gotoDefinition = if (has_lsp) Lsp.gotoDefinition else null,
+    .completion = if (has_lsp) Lsp.completion else null,
+    .signatureHelp = if (has_lsp) Lsp.signatureHelp else null,
+    .resolveCompletionDocumentation = if (has_lsp) Lsp.resolveCompletionDocumentation else null,
+    .supportsFormat = if (has_lsp) Lsp.supportsFormat else null,
+    .format = if (has_lsp) Lsp.format else null,
 };
 
 const icon_png = @embedFile("ICON.png");
@@ -64,8 +70,9 @@ pub fn register(host: *sdk.Host) !void {
     plugin.state = @ptrCast(&plugin_state);
     try host.registerPlugin(&plugin);
     try host.registerPainter(.{ .owner = &plugin, .draw = paint });
-    Lsp.configure();
+    if (has_lsp) Lsp.configure();
     try host.registerLanguageSupport(language_support);
+    if (!has_lsp) return;
     try host.registerCommand(.{
         .id = sdk.Plugin.commandId("zig", "restartLanguageServer"),
         .owner = &plugin,
@@ -94,7 +101,7 @@ fn drawEditMenuSection(_: ?*anyopaque) !void {
 }
 
 fn deinit(_: *anyopaque) void {
-    Lsp.deinit();
+    if (has_lsp) Lsp.deinit();
 }
 
 comptime {
