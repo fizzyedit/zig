@@ -222,11 +222,13 @@ fn ensureResolved() void {
     if (init_options.getPtr("zig_exe_path")) |slot| slot.* = .{ .string = zig_path };
 }
 
-pub fn onFolderOpen(_: *anyopaque, _: std.mem.Allocator) void {
+/// `fizzy.folder.opened`. The client reads the root from `host.folder()`.
+pub fn folderOpened(_: *anyopaque, _: sdk.events.Event) void {
     client.onFolderOpen();
 }
 
-pub fn onFolderClose(_: *anyopaque) void {
+/// `fizzy.folder.closed`.
+pub fn folderClosed(_: *anyopaque, _: sdk.events.Event) void {
     client.onFolderClose();
 }
 
