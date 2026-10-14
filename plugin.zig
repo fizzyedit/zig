@@ -21,8 +21,6 @@ var plugin: sdk.Plugin = .{
 
 const vtable: sdk.Plugin.VTable = .{
     .deinit = deinit,
-    .onFolderOpen = if (has_lsp) Lsp.onFolderOpen else null,
-    .onFolderClose = if (has_lsp) Lsp.onFolderClose else null,
 };
 
 var plugin_state: u8 = 0;
@@ -73,6 +71,9 @@ pub fn register(host: *sdk.Host) !void {
     if (has_lsp) Lsp.configure();
     try host.registerLanguageSupport(language_support);
     if (!has_lsp) return;
+    // zls follows the project folder: restarted against a new one, stopped when it closes.
+    try host.subscribe(.{ .event = "fizzy.folder.opened", .owner = &plugin, .handler = Lsp.folderOpened });
+    try host.subscribe(.{ .event = "fizzy.folder.closed", .owner = &plugin, .handler = Lsp.folderClosed });
     try host.registerCommand(.{
         .id = sdk.Plugin.commandId("zig", "restartLanguageServer"),
         .owner = &plugin,
