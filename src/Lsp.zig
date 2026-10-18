@@ -33,7 +33,7 @@ fn log(source: []const u8, level: std.log.Level, msg: []const u8) void {
 }
 
 fn currentEnviron() std.process.Environ {
-    if (builtin.os.tag == .windows) return .{ .block = .global };
+    if (builtin.target.os.tag == .windows) return .{ .block = .global };
     return .{ .block = .{ .slice = std.mem.span(@as([*:null]?[*:0]const u8, @ptrCast(std.c.environ))) } };
 }
 
@@ -48,7 +48,7 @@ fn tryDir(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, exe_name: []const
 }
 
 fn findInPathList(gpa: std.mem.Allocator, io: std.Io, path_list: []const u8, exe_name: []const u8) ?[]const u8 {
-    const sep: u8 = if (builtin.os.tag == .windows) ';' else ':';
+    const sep: u8 = if (builtin.target.os.tag == .windows) ';' else ':';
     var it = std.mem.tokenizeScalar(u8, path_list, sep);
     while (it.next()) |dir| {
         if (tryDir(gpa, io, dir, exe_name)) |found| return found;
@@ -129,7 +129,7 @@ fn resolveExecutable(
     posix_name: []const u8,
     windows_name: []const u8,
 ) []const u8 {
-    if (builtin.os.tag == .windows) return windows_name;
+    if (builtin.target.os.tag == .windows) return windows_name;
 
     const exe_name = posix_name;
 
@@ -153,7 +153,7 @@ pub fn configure() void {
 
     // Deliberately no executable resolution here — see `ensureResolved`. `register(host)` runs
     // on fizzy's startup path, and everything in it is time the window doesn't appear.
-    command_buf[0] = if (builtin.os.tag == .windows) "zls.exe" else "zls";
+    command_buf[0] = if (builtin.target.os.tag == .windows) "zls.exe" else "zls";
 
     // Reserve the key now so `ensureResolved` can fill it in by mutating the value *in place*.
     // `Client.Config` stores `initialization_options` by value, and a `std.json.ObjectMap` copy
